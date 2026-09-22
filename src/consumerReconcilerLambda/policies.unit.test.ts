@@ -2,7 +2,11 @@ import type { Consumer } from './consumers';
 import {
   apiResourcePolicy,
   consumerConfigKeyPolicy,
+  consumerSecretValue,
+  normalizePolicy,
+  parsePolicy,
   policiesEqual,
+  roleDescription,
   roleInvokePolicy,
   roleTrustPolicy,
   secretResourcePolicy,
@@ -270,5 +274,131 @@ describe('drift detection', () => {
     expect(policy.Statement[2].Principal).toEqual({
       AWS: ['arn:aws:iam::111111111111:root'],
     });
+  });
+});
+
+describe('roleDescription', () => {
+  it('uses the declared description', () => {
+    expect(roleDescription({ ...flex, description: 'Flex' }, 'dev')).toBe(
+      'Flex',
+    );
+  });
+
+  it('falls back to the CDK default', () => {
+    expect(roleDescription(flex, 'dev')).toBe(
+      'API Consumer role for  flex = dev',
+    );
+  });
+});
+
+describe('consumerSecretValue', () => {
+  const base = {
+    region: 'eu-west-2',
+    accountId: '542403648748',
+    apiUrl: 'https://api',
+    consumerRoleArn: 'arn:role',
+  };
+
+  it('includes externalId and apiKey only when set', () => {
+    expect(consumerSecretValue({ ...base, externalId: 'x1' })).toEqual({
+      region: 'eu-west-2',
+      apiAccountId: '542403648748',
+      apiUrl: 'https://api',
+      consumerRoleArn: 'arn:role',
+      externalId: 'x1',
+    });
+  });
+});
+
+describe('parsePolicy', () => {
+  it.each([undefined, ''])('returns undefined for %j', (raw) => {
+    expect(parsePolicy(raw)).toBeUndefined();
+    expect(normalizePolicy(raw)).toBe('');
+  });
+
+  it('throws on a document it cannot parse', () => {
+    expect(() => parsePolicy('not a policy')).toThrow(
+      'Unable to parse policy document: not a policy',
+    );
+  });
+});
+
+describe('normalizePolicy', () => {
+  it('treats a single statement object like a one-item array', () => {
+    const statement = {
+      Effect: 'Allow' as const,
+      Action: 's3:GetObject',
+      Resource: '*',
+    };
+
+    expect(
+      policiesEqual({ Version: '2012-10-17', Statement: statement } as never, {
+        Version: '2012-10-17',
+        Statement: [statement],
+      }),
+    ).toBe(true);
+  });
+
+  it('treats a missing Statement as empty', () => {
+    expect(normalizePolicy({ Version: '2012-10-17' } as never)).toBe('[]');
+  });
+
+  it('canonicalises principals, conditions and Not* elements', () => {
+    const written = {
+      Version: '2012-10-17' as const,
+      Statement: [
+        {
+          Effect: 'Deny',
+          NotPrincipal: {
+            Service: 'lambda.amazonaws.com',
+            AWS: ['308036881389', 'arn:aws:iam::111111111111:root'],
+          },
+          NotAction: ['S3:GetObject', 's3:PutObject'],
+          NotResource: 'arn:aws:s3:::bucket/*',
+          Condition: {
+            StringEquals: {
+              'aws:SourceVpce': 'vpce-1',
+              'aws:PrincipalTag/x': 'y',
+            },
+            Bool: { 'aws:SecureTransport': 'true' },
+          },
+        },
+      ],
+    };
+    const returned = {
+      Version: '2012-10-17' as const,
+      Statement: [
+        {
+          Effect: 'Deny',
+          NotPrincipal: {
+            AWS: [
+              'arn:aws:iam::111111111111:root',
+              'arn:aws:iam::308036881389:root',
+            ],
+            Service: ['lambda.amazonaws.com'],
+          },
+          NotAction: ['s3:putobject', 's3:getobject'],
+          NotResource: ['arn:aws:s3:::bucket/*'],
+          Condition: {
+            Bool: { 'aws:securetransport': ['true'] },
+            StringEquals: {
+              'aws:principaltag/x': 'y',
+              'aws:sourcevpce': ['vpce-1'],
+            },
+          },
+        },
+      ],
+    };
+
+    expect(policiesEqual(written as never, returned as never)).toBe(true);
+    expect(
+      policiesEqual(
+        written as never,
+        {
+          ...returned,
+          Statement: [{ ...returned.Statement[0], NotResource: 'other' }],
+        } as never,
+      ),
+    ).toBe(false);
   });
 });

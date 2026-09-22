@@ -87,4 +87,15 @@ describe('validateConsumers', () => {
       expect.stringMatching(/^FLEX: collides with consumer flex/),
     ]);
   });
+
+  it('allows consumers without a VPC endpoint', () => {
+    const noVpce = { ...flex, vpcEndpointId: undefined };
+    const { consumers, errors } = validateConsumers([
+      param('flex', flex),
+      param('other', { ...noVpce, accountId: '111111111111' }),
+    ]);
+
+    expect(errors).toEqual([]);
+    expect(consumers[1].vpcEndpointId).toBeUndefined();
+  });
 });

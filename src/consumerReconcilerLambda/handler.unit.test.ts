@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import {
   APIGatewayClient,
   CreateApiKeyCommand,
@@ -490,6 +489,20 @@ describe('consumer reconciler handler', () => {
       await expect(handler({}, clients)).rejects.toMatchObject({
         message: 'denied',
       });
+    });
+
+    it('falls back to its own AWS clients when none are injected', async () => {
+      declare({});
+      secrets.on(ListSecretsCommand).resolves({ SecretList: [] });
+      apigw.on(GetRestApiCommand).resolves({});
+      kms.on(DescribeKeyCommand).rejects({ name: 'NotFoundException' });
+
+      // Twice, so the second invocation reuses the cached clients.
+      await handler();
+      const report = await handler();
+
+      expect(report.errors).toEqual([]);
+      expect(ssm.commandCalls(GetParametersByPathCommand)).toHaveLength(2);
     });
 
     it('rejects an unknown MODE', async () => {
