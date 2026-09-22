@@ -1,9 +1,10 @@
-import { CfnOutput, Stack } from 'aws-cdk-lib';
+import { CfnOutput, RemovalPolicy, Stack } from 'aws-cdk-lib';
 import { RestApi } from 'aws-cdk-lib/aws-apigateway';
 import {
   AccountPrincipal,
   Effect,
   IPrincipal,
+  Policy,
   PolicyStatement,
   Role,
   ServicePrincipal,
@@ -24,6 +25,7 @@ export interface IamConsumerConstructProps {
   readonly environment: string;
   readonly api: RestApi;
   readonly consumers: Record<string, IamConsumerConfig>;
+  readonly retainConsumers?: string[];
 }
 
 const PERMISSIONS_TO_METHODS: Record<Permission, string[]> = {
@@ -38,7 +40,13 @@ export class IamConsumerConstruct extends Construct {
   constructor(scope: Construct, id: string, props: IamConsumerConstructProps) {
     super(scope, id);
 
-    const { developerId, environment, api, consumers } = props;
+    const {
+      developerId,
+      environment,
+      api,
+      consumers,
+      retainConsumers = [],
+    } = props;
 
     const stack = Stack.of(this);
     const resourcePrefix = developerId
@@ -77,6 +85,13 @@ export class IamConsumerConstruct extends Construct {
           resources: apiResources,
         }),
       );
+
+      if (retainConsumers.includes(consumerName)) {
+        role.applyRemovalPolicy(RemovalPolicy.RETAIN);
+        (role.node.tryFindChild('DefaultPolicy') as Policy).applyRemovalPolicy(
+          RemovalPolicy.RETAIN,
+        );
+      }
 
       this.consumerRoles.set(consumerName, role);
 

@@ -19,6 +19,7 @@ export interface MonitorStackProps extends StackProps {
   readonly table: dynamodb.ITable;
   readonly api: apigateway.RestApi;
   readonly lambdas: lambda.IFunction[];
+  readonly consumerReconciler?: lambda.IFunction;
   readonly notificationEmails?: string[];
   readonly stackPrefix: string;
   readonly kmsKeyAlias: string;
@@ -46,6 +47,7 @@ export class MonitoringStack extends Stack {
       table,
       api,
       lambdas,
+      consumerReconciler,
       notificationEmails = [],
       stackPrefix,
       kmsKeyAlias,
@@ -153,6 +155,22 @@ export class MonitoringStack extends Stack {
       this.createLambdaAlarms(fn, resourcePrefix, index);
     });
     this.addLambdaWidgets(lambdas);
+
+    if (consumerReconciler) {
+      new cloudwatch.Alarm(this, 'ConsumerReconcilerErrors', {
+        alarmName: `${resourcePrefix}-consumer-reconcailer-errors`,
+        alarmDescription:
+          'Consumer reconciler failed: an external consumer changed in params repo has not been applied',
+        metric: consumerReconciler.metricErrors({
+          period: Duration.minutes(5),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      }).addAlarmAction({
+        bind: () => ({ alarmActionArn: this.criticalTopic.topicArn }),
+      });
+    }
 
     this.performanceDashboard = this.createPerformanceDashboard(
       resourcePrefix,

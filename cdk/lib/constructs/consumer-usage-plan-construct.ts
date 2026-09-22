@@ -1,4 +1,10 @@
-import { ApiKey, RestApi, UsagePlan } from 'aws-cdk-lib/aws-apigateway';
+import { RemovalPolicy } from 'aws-cdk-lib';
+import {
+  ApiKey,
+  CfnUsagePlanKey,
+  RestApi,
+  UsagePlan,
+} from 'aws-cdk-lib/aws-apigateway';
 import { Effect, PolicyStatement } from 'aws-cdk-lib/aws-iam';
 import {
   AwsCustomResource,
@@ -19,6 +25,7 @@ export interface ConsumerUsagePlanConstructProps {
   readonly consumers: Record<string, ConsumerThrottleConfig>;
   readonly defaultRateLimit?: number;
   readonly defaultBurstLimit?: number;
+  readonly retainConsumers?: string[];
 }
 
 export class ConsumerUsagePlanConstruct extends Construct {
@@ -38,6 +45,7 @@ export class ConsumerUsagePlanConstruct extends Construct {
       consumers,
       defaultBurstLimit = 10,
       defaultRateLimit = 20,
+      retainConsumers = [],
     } = props;
 
     const prefix = developerId ? `${developerId}-${environment}` : environment;
@@ -68,6 +76,14 @@ export class ConsumerUsagePlanConstruct extends Construct {
       });
 
       usagePlan.addApiKey(apiKey);
+
+      if (retainConsumers.includes(consumerName)) {
+        apiKey.applyRemovalPolicy(RemovalPolicy.RETAIN);
+        usagePlan.applyRemovalPolicy(RemovalPolicy.RETAIN);
+        usagePlan.node.children
+          .filter((c) => c instanceof CfnUsagePlanKey)
+          .forEach((k) => k.applyRemovalPolicy(RemovalPolicy.RETAIN));
+      }
 
       const getApiKeyResource = new AwsCustomResource(
         this,

@@ -1,0 +1,35 @@
+{
+  "name": "@src/consumerReconcilerLambda",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "targets": {
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "VITEST_COVERAGE_DIR=coverage/consumerReconcilerLambda vitest run src/consumerReconcilerLambda/*"
+      }
+    },
+    "build": {
+      "dependsOn": ["typecheck", "test"],
+      "executor": "@nx/esbuild:esbuild",
+      "outputs": ["{option.outputPath}"],
+      "options": {
+        "main": "src/consumerReconcilerLambda/handler.ts",
+        "tsConfig": "src/consumerReconcilerLambda/tsconfig.json",
+        "outputPath": "build/consumerReconcilerLambda",
+        "minify": true,
+        "bundle": true,
+        "thirdParty": true,
+        "platform": "node",
+        "declaration": false,
+        "target": "node20",
+        "format": ["cjs"],
+        "external": ["@aws-sdk/*"],
+        "skipTypeCheck": true,
+        "esbuildOptions": {
+          "outfile": "./build/consumerReconcilerLambda/index.js"
+        }
+      }
+    }
+  }
+}

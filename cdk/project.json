@@ -20,7 +20,8 @@
     "@src/generateSarPresignedUrlLambda",
     "@src/getSarStatusLambda",
     "@src/patchDataLambda",
-    "@src/dvlaPilotPurgeLambda"
+    "@src/dvlaPilotPurgeLambda",
+    "@src/consumerReconcilerLambda"
   ],
   "targets": {
     "diff": {

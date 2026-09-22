@@ -41,6 +41,10 @@ import {
   ConsumerThrottleConfig,
   ConsumerUsagePlanConstruct,
 } from '../constructs/consumer-usage-plan-construct';
+import { ConsumerReconcilerConstruct } from '../constructs/consumer-reconciler-constuct';
+import { ConsumerProvisioningByEnvironment } from 'cdk/constants/consumers';
+
+// type RoutesConfig = Record<string, RouteConfig>;
 
 export interface MainStackProps extends StackProps {
   developerId?: string;
@@ -75,6 +79,7 @@ export class MainStack extends Stack {
   public readonly e2eTestConsumerRole?: IRole;
   public readonly e2eTestConsumerApiKeyValue?: string;
   public readonly waf: WafConstruct;
+  public readonly consumerReconciler?: ConsumerReconcilerConstruct;
 
   constructor(scope: Construct, id: string, props: MainStackProps) {
     super(scope, id, props);
@@ -102,20 +107,35 @@ export class MainStack extends Stack {
     //   );
     // }
 
-    const ssmPath = `/${environmentLongNames[environment]}/udp-param/udp/externalConsumers`;
-    const ssmValue = StringParameter.valueFromLookup(this, ssmPath, '{}');
+    const consumerParamPath = `/${environmentLongNames[environment]}/udp-params/udp/externalConsumers`;
+
+    const isSharedEnvironment = !developerId;
+    const consumersOwnedByReconciler =
+      isSharedEnvironment &&
+      ConsumerProvisioningByEnvironment[environment] === 'reconciler';
 
     let externalConsumers: Record<
       string,
       ExternalConsumerConfig & { vpcEndpointId?: string }
     > = {};
-    try {
-      externalConsumers = JSON.parse(ssmValue);
-    } catch {
-      console.log(
-        'JSON.parse(externalConsumers) error externalConsumers in MainStack',
-      );
+    if (!consumersOwnedByReconciler) {
+      try {
+        const ssmValue = StringParameter.valueFromLookup(
+          this,
+          consumerParamPath,
+          '{}',
+        );
+
+        externalConsumers = JSON.parse(ssmValue);
+      } catch {
+        console.log(
+          'JSON.parse(externalConsumers) error externalConsumers in MainStack',
+        );
+      }
     }
+    const retainConsumers = isSharedEnvironment
+      ? Object.keys(externalConsumers)
+      : [];
 
     const consumerVpcEndpointIds: string[] = Object.values(externalConsumers)
       .map((c) => c.vpcEndpointId)
@@ -200,6 +220,30 @@ export class MainStack extends Stack {
     });
     this.api = apiGateway.api;
 
+    if (isSharedEnvironment && vpcEndpointId) {
+      this.consumerReconciler = new ConsumerReconcilerConstruct(
+        this,
+        'ConsumerReconciler',
+        {
+          environment,
+          mode: consumersOwnedByReconciler ? 'apply' : 'dry-run',
+          api: this.api,
+          stageName: environment,
+          ownVpcEndpointId: vpcEndpointId,
+          consumerParamPath,
+          crossAccountPrincipals,
+          kmsKey: kmsConstruct.key,
+          logRetentionDays: getLogRetentionPeriod(environment),
+          version,
+          tags: {
+            Environment: environment,
+            ServiceName: serviceName,
+            teamName: teamName,
+          },
+        },
+      );
+    }
+
     this.waf = new WafConstruct(this, 'waf', {
       developerId,
       environment,
@@ -245,6 +289,7 @@ export class MainStack extends Stack {
       environment,
       api: this.api,
       consumers: IamConsumerConfigs,
+      retainConsumers,
     });
 
     const usagePlans = new ConsumerUsagePlanConstruct(this, `UsagePlans`, {
@@ -252,6 +297,7 @@ export class MainStack extends Stack {
       environment,
       api: this.api,
       consumers: consumerthrottleConfigs,
+      retainConsumers,
     });
 
     this.e2eTestConsumerApiKeyValue = usagePlans.apiKeyValues.get('test');
@@ -270,6 +316,7 @@ export class MainStack extends Stack {
           externalConsumers,
           apiUrl: this.api.url,
           apiKeyValues: usagePlans.apiKeyValues,
+          retainOnRemoval: isSharedEnvironment,
         },
       );
 

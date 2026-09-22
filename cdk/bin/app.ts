@@ -133,6 +133,7 @@ if (!skipMainStack) {
       table: mainStack.table,
       api: mainStack.api,
       lambdas: [...mainStack.lambdas, ...sarStack.lambdas],
+      consumerReconciler: mainStack.consumerReconciler?.function,
       notificationEmails: [],
       kmsKeyAlias,
     },
