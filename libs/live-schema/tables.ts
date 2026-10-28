@@ -31,4 +31,9 @@ export const DB_ROLE_GRANTS: DbRoleGrant[] = [
     table: LIVE_SCHEMAS_TABLE,
     privileges: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'],
   },
+  {
+    role: SCHEMA_EXTRACTOR_DB_ROLE,
+    table: LIVE_USER_SCHEMAS_TABLE,
+    privileges: ['SELECT', 'INSERT', 'UPDATE'],
+  },
 ];

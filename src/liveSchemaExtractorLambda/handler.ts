@@ -6,6 +6,7 @@ import type {
   DynamoDBStreamEvent,
 } from 'aws-lambda';
 import { DynamoDBClient, type AttributeValue } from '@aws-sdk/client-dynamodb';
+import { KMSClient } from '@aws-sdk/client-kms';
 import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { unmarshall } from '@aws-sdk/util-dynamodb';
 import {
@@ -19,17 +20,23 @@ import {
   DsqlConnection,
   JsonSchema,
   LiveSchemaRepository,
+  LiveUserSchemaRepository,
   SCHEMA_EXTRACTOR_DB_ROLE,
+  UserIdHasher,
+  UserSchema,
   inferSchema,
   mergeSchemas,
+  toUserShape,
 } from '@libs/live-schema';
 import { EncryptionService } from '@libs/data-access';
 
-const { DSQL_ENDPOINT, AWS_REGION, DATA_TABLE_NAME } = requireEnvVars(
-  'DSQL_ENDPOINT',
-  'AWS_REGION',
-  'DATA_TABLE_NAME',
-);
+const { DSQL_ENDPOINT, AWS_REGION, DATA_TABLE_NAME, USER_ID_HMAC_KEY_ID } =
+  requireEnvVars(
+    'DSQL_ENDPOINT',
+    'AWS_REGION',
+    'DATA_TABLE_NAME',
+    'USER_ID_HMAC_KEY_ID',
+  );
 
 const {
   STACK: stack,
@@ -44,12 +51,17 @@ const logger = getLogger({
   environment: stack,
 });
 
-const repository = new LiveSchemaRepository(
-  new DsqlConnection({
-    endpoint: DSQL_ENDPOINT,
-    region: AWS_REGION,
-    user: SCHEMA_EXTRACTOR_DB_ROLE,
-  }),
+const dsql = new DsqlConnection({
+  endpoint: DSQL_ENDPOINT,
+  region: AWS_REGION,
+  user: SCHEMA_EXTRACTOR_DB_ROLE,
+});
+const repository = new LiveSchemaRepository(dsql);
+const userRepository = new LiveUserSchemaRepository(dsql);
+
+const hasher = new UserIdHasher(
+  USER_ID_HMAC_KEY_ID,
+  tracer.captureAWSv3Client(new KMSClient({})),
 );
 
 const encryption = kmsKeyId
@@ -167,17 +179,37 @@ const processKey = async (udpKey: string, items: StreamItem[]) => {
   }
 };
 
+/**
+ * Replaces the shape of each topic in the user's live user schema with the
+ * fields populated in its latest record. Records arrive in stream order, so a
+ * later record for the same topic wins.
+ */
+const processUser = async (udpUserId: string, items: StreamItem[]) => {
+  const topics: UserSchema = {};
+  for (const item of items) {
+    topics[item.udpKey] = toUserShape(inferSchema(item.data));
+  }
+  await userRepository.mergeTopics(await hasher.hash(udpUserId), topics);
+};
+
+const groupBy = (items: StreamItem[], keyOf: (item: StreamItem) => string) => {
+  const groups = new Map<string, StreamItem[]>();
+  for (const item of items) {
+    groups.set(keyOf(item), [...(groups.get(keyOf(item)) ?? []), item]);
+  }
+  return groups;
+};
+
 export const lambdaHandler = async (
   event: DynamoDBStreamEvent,
 ): Promise<DynamoDBBatchResponse> => {
   const failed = new Set<string>();
-  const byKey = new Map<string, StreamItem[]>();
+  const items: StreamItem[] = [];
 
   for (const record of event.Records) {
     if (!record.dynamodb?.NewImage) continue;
     try {
-      const item = await readRecord(record);
-      byKey.set(item.udpKey, [...(byKey.get(item.udpKey) ?? []), item]);
+      items.push(await readRecord(record));
     } catch (error) {
       logger.error('Failed to read stream record', {
         sequenceNumber: record.dynamodb.SequenceNumber,
@@ -187,12 +219,27 @@ export const lambdaHandler = async (
     }
   }
 
-  for (const [udpKey, items] of byKey) {
+  for (const [udpKey, keyItems] of groupBy(items, (i) => i.udpKey)) {
     try {
-      await processKey(udpKey, items);
+      await processKey(udpKey, keyItems);
     } catch (error) {
       logger.error('Failed to evolve live schema', { udpKey, error });
-      for (const item of items) failed.add(item.sequenceNumber);
+      for (const item of keyItems) failed.add(item.sequenceNumber);
+    }
+  }
+
+  // User footprints follow the global schema: only records it accepted.
+  const evolved = items.filter((i) => !failed.has(i.sequenceNumber));
+  for (const [udpUserId, userItems] of groupBy(evolved, (i) => i.pk)) {
+    try {
+      await processUser(udpUserId, userItems);
+    } catch (error) {
+      // Never log the udpUserId; sequence numbers identify the records.
+      logger.error('Failed to update live user schema', {
+        sequenceNumbers: userItems.map((i) => i.sequenceNumber),
+        error,
+      });
+      for (const item of userItems) failed.add(item.sequenceNumber);
     }
   }
 
